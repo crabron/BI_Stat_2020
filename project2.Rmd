@@ -1,0 +1,276 @@
+
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+library(MASS)
+library(gridExtra)
+library(corrplot)
+library(car)
+library(tidyverse)
+library(caTools)
+library(viridis)
+theme_set(theme_minimal())
+```
+
+### Импорт данных. 
+
+```{r}
+df <- Boston
+```
+## Обязательная часть
+### 1. Cтандартизация и полная модель
+
+```{r}
+df_pred_stand <- df %>% mutate_at(vars(-medv), scale)
+full_st = lm(medv~., data= df_pred_stand)
+summary(full_st)
+
+```
+
+### 2. Диагностика модели
+
+Строим графики остатков
+Для всей модели
+
+Очевидно, что взаимосвязь по всем предикторам не совсем линейна
+
+```{r, fig.height=4, fig.width=5}
+
+gg_resid <- ggplot(data = full_st, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0) +
+  geom_smooth(formula = y ~ x, method = "lm") +
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red")
+gg_resid
+
+```
+
+По каждому предиктору отдельно
+
+Использован код отсюда:
+https://stackoverflow.com/questions/10706753/how-do-i-arrange-a-variable-list-of-plots-using-grid-arrange
+
+Проблемные предикторы:
+crim - ненормальное распределение, неравномерность дисперсии
+zn - нули
+indus - неравномерность дисперсии в нижней части диапозона, паттер за счёт дискретных значений при высоких значениях
+chas - факторный предиктор с двумя уровнями
+rm - нелинейный паттерн
+age - неравномерность дисперсии
+dis - неравномерность дисперсии
+rad - факторная переменная с вылетающим значением сверху
+tax - вылетающие значения сверху
+ptratio - нелинейный паттерн
+black - неравномерность дисперсии, паттерны
+lstat - нелинейность распределения остатков
+
+
+```{r,fig.height=12, fig.width=8, results=FALSE}
+
+ggres <- function(cols_x){
+  gg_resid + 
+    aes(x = df[[cols_x]]) + 
+    xlab(cols_x)
+}
+
+cols <- colnames(df)
+pp <- lapply(cols, ggres)
+n <- length(pp)
+nCol <- floor(sqrt(n))
+do.call("grid.arrange", c(pp, ncol=nCol))
+
+```
+
+Плоты без разделения на предикторы.
+Заметно, что модель очень неадекватно работает в нижнем, и особенно в верхнем диапазоне значений цены
+
+```{r, fig.height=8, fig.width=8}
+
+
+par(mfrow=c(2,2))
+plot(full_st)
+
+```
+
+### 3. График предсказания стоимости от цены
+
+Наибольшее значение коэффицента по модулю у lstat - процент населения с низким статусом(?) - -3.74
+График зависимоти цены от этой переменной(предсказанный по линейной модели)
+
+
+```{r, fig.height=4, fig.width=5}
+
+lstat <- df %>% pull(lstat)
+medv_pred <- predict(lm(medv ~ lstat, df))
+df_for_lstat <- data.frame(lstat = lstat, medv_pred = medv_pred)
+plot(df_for_lstat)
+
+```
+
+## Дополнительная часть
+
+Использованы материалы из:
+https://medium.com/analytics-vidhya/eda-and-multiple-linear-regression-on-boston-housing-in-r-270f858dc7b
+https://www.kaggle.com/andyxie/regression-with-r-boston-housing-price
+http://rstudio-pubs-static.s3.amazonaws.com/242422_bacb5dd02ae641389326ad76ec9877af.html
+
+Еще раз посмотрим на наш датасет
+
+### Количество строк в датасете
+
+```{r}
+nrow(df)
+```
+
+
+### Стандартизация и распределение факторов
+
+Как выглядят факторы на боксплотах до стандартизации:
+
+```{r}
+require(reshape2)
+ggplot(data = melt(df), aes(x=variable, y=value)) + geom_boxplot(aes(fill=variable)) +
+   scale_fill_viridis_d(option = "A", alpha = 0.7)
+```
+И как выглядят после
+
+Ассиметрия по преступности(crim), zn, количестве черного населения(black)
+Для rm(количество комнат) - много вылетающих значений
+
+```{r}
+require(reshape2)
+df_scaled <- df %>% mutate_all(scale)
+ggplot(data = melt(df_scaled), aes(x=variable, y=value)) + geom_boxplot(aes(fill=variable)) +
+   scale_fill_viridis_d(option = "A", alpha = 0.7)
+
+```
+
+Распределение цены.
+
+Далеко не нормально.
+Можно логарифмировать переменную, но как далее мы будем трактовать резутьтат?
+В дальнейшем было бы логично использовать glm
+
+```{r, , fig.height=4, fig.width=6}
+
+qplot(x=medv,data=df,geom='histogram', bins = 60)
+
+```
+
+### Взаимодействие факторов. Мультиколлиниарность
+
+Проверим на мультиколлиниарность полную модель выше
+Выпадают предикторы rad, tax
+
+```{r}
+
+vif(full_st)
+
+```
+
+Может быть у нас предикторы коррелируют между собой?
+
+Конечно же у нас полно сильных корреляций, в том числе пара rad и tax коррелируют друг с другом
+
+```{r, fig.height=8, fig.width=8}
+
+df_cor = cor(df)
+corrplot.mixed(df_cor)
+
+```
+
+### Выкидываем переменные
+
+Не значимы у нас переменные indus и age.
+
+```{r}
+
+summary(full_st)
+
+```
+
+Вспомним, что остатки для lstat были нелинейными
+
+```{r, fig.height=3, fig.width=4}
+
+
+par(mfrow=c(2,2))
+gg_resid + aes(x = lstat)
+
+```
+
+Зависимость medv от lstat также нелинейна
+
+```{r, fig.height=4, fig.width=6}
+plot(medv ~ lstat, data = df)
+```
+Предположим, что зависимость квадратичная
+Также вспомним что ранее мы показали, что lstat и rad коррелируют друг с другом - сделаем из зависимыми.
+Перестроим модель
+
+R2 вырос с до 0.73 до 0.8
+
+```{r, fig.height=4, fig.width=6}
+model2 <- lm(medv~.-age-indus+I(lstat^2)+ lstat*rad,data=df_pred_stand)
+summary(model2)
+```
+
+zn недостоверно влияет
+Что с графиком остатков по zn?
+
+Видим паттерны. А не лучше ли было использовать ANOVA для анализа?
+
+Я оставлю эту модель как финальную.
+
+```{r}
+gg_resid <- ggplot(data = model2, aes(x = .fitted, y = .stdresid)) + 
+  geom_point() + 
+  geom_hline(yintercept = 0) +
+  geom_smooth(formula = y ~ x, method = "lm") +
+  geom_hline(yintercept = 2, color = "red") +
+  geom_hline(yintercept = -2, color = "red")
+gg_resid + aes(x = zn)
+```
+
+### Проверка финальной модели
+
+Нормально ли распределены остатки?
+Более чем.
+
+
+```{r}
+residuals <- data.frame('Residuals' = model2$residuals)
+res_hist <- ggplot(residuals, aes(x=Residuals)) + geom_histogram(color='black', fill='#de7065ff') + ggtitle('Histogram of Residuals')
+res_hist
+```
+
+Разобьём данные на группы, проверим насколько предсказанные значения соответствуют реальным.
+
+
+
+```{r}
+
+set.seed(3148842)
+split <- sample.split(df_pred_stand,SplitRatio = 0.75) 
+train <- subset(df_pred_stand,split==TRUE)
+test <- subset(df_pred_stand,split==FALSE)
+
+test$predicted.medv <- predict(model2,test)
+pl1 <-test %>% 
+  ggplot(aes(medv,predicted.medv)) +
+  geom_point(alpha=0.5) + 
+  stat_smooth(aes(colour='black')) +
+  xlab('Actual value of medv') +
+  ylab('Predicted value of medv') +
+  theme_bw()
+
+pl1
+
+```
+
+### Выводы
+
+Модель  предсказывает медианное значение на всём диапозоне значений одинаково..
+Есть проблемы на участке со стоимостью домов 20 - 25 тысяч, на крайних значениях модель может быть плохо применима из-за малой выборки(меньше 20, больше 35).
+В качестве критерия определения стоимости, я бы рекомендовал использовать lstat, как интегральный критерий уровня жизни на определённой территории. Если на какой-то территории много людей с низким уровнем жизни, то и дома там будут стоить дешевле.
