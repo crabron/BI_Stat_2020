@@ -1,0 +1,243 @@
+---
+title: "survival"
+author: ""
+date: "08 03 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE)
+```
+
+```{r}
+library(survival)
+library(dplyr)
+library(ggfortify)
+library(car)
+library(survminer)
+```
+
+### EDA
+
+Датасет - ovarion
+
+futime - выживаеемость
+fustat - статус наблюдения
+age - возраст
+resid.ds - сопутствующие заболевания
+tx - налисчие лечения
+ecog.ps - статус ECOG
+
+Всего 26 пациентов
+
+```{r}
+
+ovarian
+
+```
+
+Немного преобразуем данные, разделим всех пациентов в три группы по возрасту, переведем часть значений в факторы. 
+
+```{r}
+
+ovarian_gr <- ovarian %>% 
+  mutate(Age_groups = cut(ovarian$age, 3, labels = c('Young', 'Medium', 'Aged'))) %>% 
+  mutate(rx = as.factor(rx)) %>% 
+  mutate(resid.ds = as.factor(resid.ds))
+
+ovarian_w_aged <- filter(ovarian_gr, Age_groups != "Aged")
+ovarian_aged <- filter(ovarian_gr, Age_groups == "Aged")
+```
+
+
+Распределение пациентов по возрасту
+
+```{r}
+
+ggplot(ovarian, aes(x=age)) +
+  geom_histogram(color='black', fill='skyblue', binwidth = 5) +
+  ggtitle('Age')
+
+```
+
+Как распределены сопутствующие заболевания относительно возраста пациентов?
+
+Подозрительно, сделаем анову.
+
+```{r, echo=TRUE, fig.height=4, fig.width=4}
+ggplot(ovarian_gr, aes(x=resid.ds, y=age)) + 
+  geom_boxplot(fill='skyblue')
+```
+
+Похоже, линейной зависимости наличия сопутствующих заболевания и возраста мы показать не можем. 
+Или она не линейная. Или это вероятность, получить с возрастом сопутствующее заболевание?
+
+
+```{r}
+
+res.aov <- aov(age ~ resid.ds, data = ovarian_gr)
+summary(res.aov)
+
+```
+
+Попробуем использовать логистическую регрессию.
+Если посмотреть на остатки модели - у нас нет линейной зависимости.
+
+```{r, fig.height=3.5, fig.width=5.5}
+
+mod <- glm(resid.ds ~ age, family = binomial(link = 'logit'), data = ovarian_gr)
+mod_diag <- data.frame(.fitted = fitted(mod, type = 'response'),
+                        .resid_p = resid(mod, type = 'pearson'))
+
+ggplot(mod_diag, aes(y = .resid_p, x = .fitted)) + 
+  geom_point() +
+  theme_bw() +
+  geom_hline(yintercept = 0) +  
+  geom_smooth(method = 'loess')
+
+
+```
+
+Был ли выбран тип лечения, в зависимости от возраста пациентов?
+Вторым способом лечили пациентов примерно одной возрастной группы.
+
+```{r, echo=TRUE, fig.height=4, fig.width=4}
+ggplot(ovarian_gr, aes(x=rx, y=age)) + 
+  geom_boxplot(fill='skyblue') +
+  geom_point()
+```
+
+### кривые Каплана-Мейра
+
+Кривая выживаемости.
+
+```{r}
+
+fit <- survfit(Surv(futime, fustat) ~ 1, data=ovarian)
+autoplot(fit)
+
+```
+
+Кривая выживаемости в зависимости от типа наличия сопутствующих заболеваний.
+С сопутствующими заболеваниями умирали раньше.
+
+```{r}
+
+fit_2 <- survfit(Surv(futime, fustat) ~ resid.ds, data=ovarian)
+autoplot(fit_2)
+
+```
+
+
+Кривая выживаемости в зависимости от типа лечения.
+Кажется, что для второй группы выживаемость выше, особенно на ранних сроках.
+
+```{r}
+
+fit_3 <- survfit(Surv(futime, fustat) ~ rx, data=ovarian)
+autoplot(fit_3)
+
+```
+
+А что с возрастом?
+
+Если для возраста меньше 53х(Young) и больше(Medium) разница небольшая, то группа Aged(старше 60-ти лет) показывает высокую смертность за кототкий промежуток времени.
+
+```{r}
+fit_4 <- survfit(Surv(futime, fustat) ~ Age_groups, data=ovarian_gr)
+autoplot(fit_4)
+
+```
+
+#### Еще немного EDA
+
+Посмотрим на группу старше 60-ти подробнее.
+
+В этой группе было всего 7 пациентов из них сопутствующие заболевания были у шестерых.
+
+```{r}
+
+ovarian_gr %>%
+  group_by(Age_groups, resid.ds) %>%
+  summarise(count_resid=n())
+
+```
+
+При этом 5 из них получали лечение первого типа, чем можно объяснить избыточную смертность при данном типе лечения.
+
+```{r}
+
+ovarian_gr %>%
+  group_by(Age_groups, rx) %>%
+  summarise(count_rx=n())
+
+```
+
+### Лог-ранк тесты и риски
+
+Лог-ранк тесты показывают зависимость выживаемости от возраста.
+
+
+```{r}
+
+
+survdiff(Surv(futime, fustat) ~ age, data = ovarian_gr)
+
+```
+
+```{r}
+
+
+survdiff(Surv(futime, fustat) ~ rx, data = ovarian_gr)
+
+```
+
+
+```{r}
+
+survdiff(Surv(futime, fustat) ~ resid.ds, data = ovarian_gr)
+
+```
+
+Построим модель Кокса.
+Если считать что факторы независимы - то влияет возраст.
+
+```{r}
+
+cox <- coxph(Surv(futime, fustat) ~ age + resid.ds + rx, data = ovarian_gr)
+summary(cox)
+
+```
+
+Та же модель, но без группы старше 60-ти лет.
+Для данной группы влияние возраста уже выражено не так, но другие факторы уже влияют сильнее.
+
+```{r}
+
+cox_w_aged <- coxph(Surv(futime, fustat) ~ age + resid.ds + rx, data = ovarian_w_aged)
+summary(cox_w_aged)
+
+```
+
+То же, но уже с визуализацией.
+Для всех пациентов.
+
+
+```{r}
+
+ggforest(cox, data = ovarian_gr)
+
+```
+
+Для пациентов младше 60-ти.
+
+```{r}
+
+ggforest(cox_w_aged, data = ovarian_w_aged)
+
+```
+
+### Выводы:
+
+- значительно повышаются риски для группы старше 60-ти лет.
+- мы не можем  достоверно показать что сопутствующие заболевания повышают риски, или что выбор второго плана лечения уменьшают риски, несмотря на наличие данных тенденций. 
