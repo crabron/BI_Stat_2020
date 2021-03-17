@@ -15,6 +15,7 @@ library(gridExtra)
 library(corrplot)
 library(multcomp)
 library(readxl)
+library(plotly)
 
 ```
 
@@ -31,9 +32,10 @@ mice <- mice %>%
   mutate(Treatment = as.factor(Treatment)) 
 mice <- mice %>% 
   separate(MouseID, c("Mouse", "Repeat"), remove = FALSE) %>% 
-  mutate(Mouse = as.factor(Mouse))
+  mutate(Mouse = as.factor(Mouse)) %>% 
+  mutate(Repeat = as.factor(Repeat))
 mice <- mice %>% 
-  relocate(c(Genotype, Treatment, Behavior, class, ERBB4_N, BDNF_N), .after = Mouse) 
+  relocate(c(Genotype, Repeat, Treatment, Behavior, class, ERBB4_N, BDNF_N), .after = Mouse) 
 mice
 
 ```
@@ -108,7 +110,7 @@ mice_anova
 
 ```{r}
 post_hoch <- glht(mice_prot_lm, linfct = mcp(class = "Tukey"))
-result<-summary(post_hoch)
+result <- summary(post_hoch)
 result
 
 ```
@@ -118,10 +120,10 @@ result
 ## Попробовать построить линейную модель
 
 
-Обрежем данные, уберём столбцы с большим количеством пропущенных значений
+Обрежем данные, уберём столбцы с большим количеством пропущенных значений и нечисловыми данными.
 
 ```{r}
-mice_d <- mice %>% dplyr::select(-c(MouseID, Mouse, Genotype, Treatment, Behavior, class, ARC_N, BCL2_N , H3MeK4_N , BAD_N, EGR1_N, H3AcK18_N, pCFOS_N))
+mice_d <- mice %>% dplyr::select(-c(MouseID, Mouse, Repeat, Genotype, Treatment, Behavior, class, ARC_N, BCL2_N , H3MeK4_N , BAD_N, EGR1_N, H3AcK18_N, pCFOS_N))
 mice_d
 ```
 
@@ -174,7 +176,7 @@ summary(pca)
 
 ```
 
-Фактоорные нагрузки
+Факторные нагрузки
 
 ```{r}
 screeplot(pca)
@@ -183,6 +185,7 @@ screeplot(pca)
 Трёхмерный график
 
 ```{r}
+
 scores <- pca$scores
 x <- scores[,1]
 y <- scores[,2]
@@ -192,8 +195,8 @@ loads <- pca$loadings
 
 scale.loads <- 5
 
-# 3D plot
-library(plotly)
+
+
 p <- plot_ly() %>%
   add_trace(x=x, y=y, z=z,
             type="scatter3d", mode="markers",
