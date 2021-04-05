@@ -1,0 +1,242 @@
+---
+title: "Untitled"
+author: "Grigory Gladkov"
+date: "05 04 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+
+library(tidyverse)
+library(car)
+library(ggpubr)
+library(broom)
+library(pROC)
+
+```
+
+
+## Импорт
+
+Переводим категориальные значения в факторы.
+
+```{r}
+
+df <-  read_csv("https://stats.idre.ucla.edu/stat/data/binary.csv")
+
+df$admit <- as.factor(df$admit)
+df$rank <- as.factor(df$rank)
+summary(df)
+```
+
+### EDA
+
+Проверка на наличие NA
+
+```{r}
+colSums(is.na(df))
+```
+
+Максимальные значения gre и gpa обрезаны.
+
+```{r,fig.height=4, fig.width=4}
+ggplot(df) + geom_point(aes(x = gpa, y = gre),  bins = 100, colour="black", fill="white") + theme_bw()
+```
+
+
+Для gre максимум - 800 и для gpa 4. \
+Кроме этого значения вполне нормально распределены.
+
+```{r,fig.height=3, fig.width=6}
+gg1 <- ggplot(df, aes(x = gpa)) + 
+    geom_histogram( bins = 50, colour="black", fill="white") +
+    theme_bw()
+    
+
+gg2 <- ggplot(df, aes(x = gre)) + 
+    geom_histogram( bins = 50, colour="black", fill="white") +
+    theme_bw()
+
+ggarrange(gg1, gg2)
+```
+
+```{r}
+summary(df)
+```
+
+### Полная модель
+
+Построим модель для всех значений
+
+```{r}
+
+mod <-glm(admit ~ ., data = df,  family = "binomial")
+res_mod <- summary(mod)
+summary(mod)
+
+
+```
+
+AIC немного уменьшается, если выкинуть или gre, или gp \
+Т.к. у нас и так мало предикторов пока ничего выкидывать не будем.
+
+```{r}
+drop1(mod, test = "Chi")
+```
+
+### Проверка модели
+
+Проверка на линейность.\
+В крайних значениях отклоняется, но в общем вполне выглядит линейным.
+
+```{r, fig.height=4, fig.width=5}
+mod9_diag <- data.frame(.fitted = fitted(mod, type = 'response'),
+                        .resid_p = resid(mod, type = 'pearson'))
+
+gg_resid <- ggplot(mod9_diag, aes(y = .resid_p, x = .fitted)) + 
+  geom_point() +
+  theme_bw() +
+  geom_hline(yintercept = 0) +  
+  geom_smooth(method = 'loess')
+gg_resid
+```
+
+Соблюдается ли линейность для количественных значений?
+Построим график отношения предикторов и логитов.
+Скорее да, чем нет?
+
+http://www.sthda.com/english/articles/36-classification-methods-essentials/148-logistic-regression-assumptions-and-diagnostics-in-r/
+
+```{r,fig.height=4, fig.width=8}
+
+probabilities <- predict(mod, type = "response")
+
+df_num <- df %>%
+  dplyr::select_if(is.numeric) 
+
+predictors <- colnames(df_num)
+predicted.classes <- ifelse(probabilities > 0.5, "pos", "neg")
+
+mydata <- df_num %>%
+  mutate(logit = log(probabilities/(1-probabilities))) %>%
+  gather(key = "predictors", value = "predictor.value", -logit)
+
+ggplot(mydata, aes(logit, predictor.value))+
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  theme_bw() + 
+  facet_wrap(~predictors, scales = "free_y")
+```
+
+Овердисперсии нет.
+
+```{r}
+overdisp_fun <- function(model) {
+  rdf <- df.residual(model)  # Число степеней свободы N - p
+  if (any(class(model) == 'negbin')) rdf <- rdf - 1 ## учитываем k в NegBin GLMM
+  rp <- residuals(model,type='pearson') # Пирсоновские остатки
+  Pearson.chisq <- sum(rp^2) # Сумма квадратов остатков, подчиняется Хи-квадрат распределению
+  prat <- Pearson.chisq/rdf  # Отношение суммы квадратов остатков к числу степеней свободы
+  pval <- pchisq(Pearson.chisq, df=rdf, lower.tail=FALSE) # Уровень значимости
+  c(chisq=Pearson.chisq,ratio=prat,rdf=rdf,p=pval)        # Вывод результатов
+}
+
+
+overdisp_fun(mod)
+
+```
+
+Анализ на наличие влиятельных наблюдений.
+
+Кажется, что вылетающих значений много.
+
+```{r, fig.height=4, fig.width=8}
+
+plot(mod, which = 4, id.n = 3)
+
+```
+
+Но вот сильно влиятельных из них нет. \
+(по приведённой выше ссылке порог был 3, не знаю общепринято ли это,)
+
+```{r}
+model.data <- augment(mod) %>% 
+  mutate(index = 1:n()) 
+
+ggplot(model.data, aes(index, .std.resid)) + 
+  geom_point(aes(color = admit), alpha = .5) +
+  theme_bw()
+
+```
+
+Проверка на мультиколлиневность.
+
+```{r}
+vif(mod)
+
+
+
+```
+
+ROC кривая.
+https://rpubs.com/kaz_yos/rocLogistic
+
+```{r ,fig.height=4, fig.width=4}
+
+resRoc <- roc(df$admit ~ mod$fitted)
+plot(resRoc, legacy.axes = TRUE)
+
+
+```
+
+Площадь под кривой.
+
+```{r}
+auc(resRoc)
+```
+
+### Как сделать модель лучше?
+
+Как можно улучшить модель? Что если выкинуть gpa -4 и gre - 800 из датасета?
+AIC упал (что логично), ROC незначительно уменьшился.
+Скорее стоит оставить исходную модель.
+
+```{r,fig.height=4, fig.width=4}
+
+df_mod <-  filter(df, (gpa < 4 & gre < 800) )
+mod1 <-glm(admit ~ ., data = df_mod,  family = "binomial")
+resRoc1 <- roc(df_mod$admit ~ mod1$fitted)
+res_mod1 <- summary(mod1)
+paste0("Полная модель AIC -- ", res_mod$aic)
+paste0("Модель без крайних значений, AIC -- ", res_mod1$aic)
+paste0("Площаль под ROC - полная -- ", auc(resRoc))
+paste0("Площаль под ROC - сокращенная -- ", auc(resRoc1))
+
+```
+
+### Предсказание и визуализация
+
+График вероятности admit от gre c разделением на ранги.
+
+```{r}
+df_new <- df
+df_new$pred <- probabilities
+ggplot(df_new, aes(x = gre, y = probabilities, fill = rank )) +
+  geom_smooth(aes(color = rank), method="loess") +
+  labs(y='Вероятность admit', x = 'gre') +
+  theme_bw()
+
+
+```
+
+
+
+
+
+
+
